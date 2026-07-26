@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import httpx
 import pytest
 
@@ -7,7 +9,7 @@ from app.broker.base import BrokerValidationError
 from app.broker.saxo import SaxoBroker
 from app.broker.simulated import SimulatedBroker
 from app.config import Settings
-from app.domain.entities import BrokerOrder, OrderSide, OrderType
+from app.domain.entities import BrokerOrder, Candle, OrderSide, OrderType
 from app.security import generate_key
 
 
@@ -46,6 +48,52 @@ async def test_paper_broker_rejects_insufficient_cash() -> None:
     broker = SimulatedBroker(initial_cash=10)
     with pytest.raises(BrokerValidationError):
         await broker.precheck(order())
+
+
+@pytest.mark.anyio
+async def test_paper_broker_exposes_authoritative_state_and_manages_protection() -> None:
+    broker = SimulatedBroker()
+    candles = [
+        Candle(
+            timestamp=datetime.now(UTC) - timedelta(hours=index),
+            open=100,
+            high=101,
+            low=99,
+            close=100,
+            volume=1_000,
+        )
+        for index in range(4, 0, -1)
+    ]
+    broker.set_candles(1234, candles)
+    broker.set_quote("MSFT", bid=104.0, ask=104.2)
+
+    assert (
+        await broker.historical_candles(uic=1234, asset_type="Stock", horizon_minutes=60, count=2)
+        == candles[-2:]
+    )
+    snapshot = await broker.market_snapshot(uic=1234, asset_type="Stock", symbol="MSFT")
+    assert snapshot.entry_price == 104.2
+    assert snapshot.spread_pct > 0
+
+    placed = await broker.place_bracket_order(order())
+    state = await broker.portfolio_state()
+    assert state.open_positions == 1
+    assert state.cash == 99_000
+    changed = await broker.replace_protective_order(
+        account_key="simulation",
+        order_id=placed.related_order_ids[0],
+        uic=1234,
+        asset_type="Stock",
+        quantity=10,
+        order_price=101,
+        trailing_distance=2,
+        trailing_step=1,
+    )
+    assert changed["status"] == "replaced"
+    cancelled = await broker.cancel_orders(
+        account_key="simulation", order_ids=(placed.related_order_ids[1],)
+    )
+    assert cancelled["Orders"][0]["Status"] == "Cancelled"  # type: ignore[index]
 
 
 def test_saxo_payload_contains_native_stop_and_take_profit() -> None:
@@ -127,6 +175,101 @@ async def test_saxo_read_endpoints_and_error_mapping() -> None:
     broker.tokens.client = broker.client
     with pytest.raises(BrokerValidationError):
         await broker.account_info()
+    await broker.close()
+
+
+@pytest.mark.anyio
+async def test_saxo_market_portfolio_chart_and_trailing_endpoints() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        path = request.url.path
+        if path.endswith("/infoprices"):
+            return httpx.Response(
+                200,
+                json={"Quote": {"Bid": 99.5, "Ask": 100.0}, "DelayedByMinutes": 0},
+            )
+        if path.endswith("/charts"):
+            return httpx.Response(
+                200,
+                json={
+                    "Data": [
+                        {
+                            "Time": "2026-01-01T10:00:00Z",
+                            "OpenBid": 99,
+                            "OpenAsk": 101,
+                            "HighBid": 100,
+                            "HighAsk": 102,
+                            "LowBid": 98,
+                            "LowAsk": 100,
+                            "CloseBid": 99.5,
+                            "CloseAsk": 100.5,
+                            "Volume": 1_000,
+                        }
+                    ]
+                },
+            )
+        if path.endswith("/positions/me"):
+            return httpx.Response(
+                200,
+                json={
+                    "Data": [
+                        {
+                            "Sector": "Technology",
+                            "PositionBase": {"Amount": 10},
+                            "PositionView": {"CurrentPrice": 100},
+                        }
+                    ]
+                },
+            )
+        if path.endswith("/balances/me"):
+            return httpx.Response(
+                200,
+                json={
+                    "TotalValue": 100_000,
+                    "CashBalance": 80_000,
+                    "HistoricalPeakEquity": 105_000,
+                    "ProfitLossOnTradePositions": -100,
+                },
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    settings = Settings(
+        broker_backend="saxo",
+        saxo_access_token=generate_key().raw,
+        saxo_account_key="account",
+    )
+    broker = SaxoBroker(settings)
+    await broker.client.aclose()
+    broker.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    broker.tokens.client = broker.client
+
+    quote = await broker.market_snapshot(uic=1234, asset_type="Stock", symbol="MSFT")
+    candles = await broker.historical_candles(
+        uic=1234, asset_type="Stock", horizon_minutes=60, count=20
+    )
+    state = await broker.portfolio_state()
+    assert quote.ask == 100
+    assert candles[0].close == 100
+    assert state.gross_exposure == 1_000
+    assert state.peak_equity == 105_000
+
+    await broker.replace_protective_order(
+        account_key="account",
+        order_id="stop-1",
+        uic=1234,
+        asset_type="Stock",
+        quantity=10,
+        order_price=101,
+        trailing_distance=2,
+        trailing_step=0.5,
+    )
+    await broker.cancel_orders(account_key="account", order_ids=("take-1",))
+    assert "PATCH" in methods
+    assert "DELETE" in methods
+    with pytest.raises(BrokerValidationError):
+        await broker.cancel_orders(account_key="account", order_ids=("bad/id",))
     await broker.close()
 
 

@@ -48,15 +48,20 @@ async def analyze_market(
 ) -> AnalysisResponse:
     container = get_container(request)
     try:
-        features, analysis = await container.analysis_service.analyze(
+        features, analysis, signal_id = await container.analysis_service.analyze(
             symbol=body.symbol,
             candles=[item.to_domain() for item in body.candles],
             benchmark_closes=body.benchmark_closes,
             news=body.news,
+            sector=body.sector,
+            uic=body.uic,
+            asset_type=body.asset_type,
+            days_to_earnings=body.days_to_earnings,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return AnalysisResponse(
+        signal_id=signal_id,
         features=features.to_safe_ai_payload(),
         decision=analysis.decision.value,
         confidence=analysis.confidence,
@@ -101,9 +106,10 @@ async def execute_order(
     if not idempotency_key.replace("-", "").replace("_", "").isalnum():
         raise HTTPException(status_code=400, detail="invalid idempotency key")
     try:
-        result = await container.trading_service.execute(
-            proposal=body.proposal.to_domain(),
-            portfolio=body.portfolio.to_domain(),
+        result = await container.trading_service.execute_signal(
+            signal_id=body.signal_id,
+            requested_quantity=body.requested_quantity,
+            order_type=body.order_type,
             idempotency_key=idempotency_key,
             actor_key=principal.raw_key,
             correlation_id=request.headers.get("X-Request-ID", ""),
@@ -203,6 +209,7 @@ async def dashboard(request: Request, _principal: ApiPrincipal) -> DashboardResp
     container = get_container(request)
     return DashboardResponse(
         ai_usage=container.repository.ai_usage(),
+        portfolio=container.repository.dashboard_summary(),
         ai_budget_dkk=container.settings.ai_monthly_budget_dkk,
         trading_mode=container.settings.trading_mode,
         trading_kill_switch=container.settings.trading_kill_switch,

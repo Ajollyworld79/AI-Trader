@@ -68,6 +68,7 @@ class BacktestEngine:
 
             if position is not None:
                 position = self._apply_corporate_actions(position, bar)
+                cash += bar.dividend * position.quantity
                 exit_price: float | None = None
                 exit_reason = ""
                 if bar.low <= position.stop:
@@ -83,7 +84,7 @@ class BacktestEngine:
                 if exit_price is not None:
                     gross = exit_price * position.quantity
                     commission = gross * config.commission_pct
-                    cash += gross - commission + bar.dividend * position.quantity
+                    cash += gross - commission
                     cost_basis = position.entry_price * position.quantity
                     pnl = gross - commission - cost_basis
                     trades.append(
@@ -127,7 +128,6 @@ class BacktestEngine:
             marked_equity = cash
             if position is not None:
                 marked_equity += position.quantity * bar.close
-                marked_equity += position.quantity * bar.dividend
             equity_curve.append(marked_equity)
             period_returns.append(
                 (marked_equity / previous_equity - 1.0) if previous_equity else 0.0

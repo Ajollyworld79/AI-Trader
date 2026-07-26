@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 import app.domain.backtest as backtest_module
 from app.domain.backtest import BacktestConfig, BacktestEngine, walk_forward_slices
 from app.domain.entities import FeatureSet
@@ -58,3 +62,22 @@ def test_walk_forward_produces_disjoint_train_test_windows() -> None:
     assert len(windows) == 7
     for train, test in windows:
         assert train[-1].timestamp < test[0].timestamp
+
+
+def test_dividend_is_added_once_while_position_is_open(monkeypatch: object) -> None:
+    candles = candle_series(65)
+    monkeypatch.setattr(backtest_module, "is_interesting", lambda *_: True)  # type: ignore[attr-defined]
+    config = BacktestConfig(
+        commission_pct=0,
+        spread_pct=0,
+        slippage_pct=0,
+        max_holding_bars=100,
+    )
+    without_dividend = BacktestEngine().run(candles, config)
+    with_dividend_candles = list(candles)
+    with_dividend_candles[61] = replace(with_dividend_candles[61], dividend=1.25)
+    with_dividend = BacktestEngine().run(with_dividend_candles, config)
+    quantity = with_dividend.trades[0].quantity
+    assert with_dividend.final_equity - without_dividend.final_equity == pytest.approx(
+        quantity * 1.25
+    )

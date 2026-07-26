@@ -7,6 +7,27 @@ from app.main import create_app
 from tests.conftest import API_KEY, candle_payload
 
 
+def executable_signal(client: TestClient) -> str:
+    repository = client.app.state.container.repository
+    return repository.save_signal(
+        symbol="MSFT",
+        decision="buy",
+        confidence=0.9,
+        reason="test signal",
+        risk_flags=[],
+        feature_snapshot={
+            "atr_14": 2.0,
+            "_execution": {
+                "sector": "Technology",
+                "uic": 1234,
+                "asset_type": "Stock",
+                "days_to_earnings": 20,
+            },
+        },
+        model_tier="mini",
+    )
+
+
 def test_health_is_public_but_api_is_authenticated(settings: Settings) -> None:
     with TestClient(create_app(settings)) as client:
         response = client.get("/health")
@@ -60,30 +81,9 @@ def test_order_endpoint_requires_admin_and_respects_kill_switch(
     auth_headers: dict[str, str],
     admin_headers: dict[str, str],
 ) -> None:
-    payload = {
-        "proposal": {
-            "symbol": "MSFT",
-            "sector": "Technology",
-            "entry_price": 100,
-            "stop_loss": 95,
-            "take_profit": 110,
-            "spread_pct": 0.001,
-            "days_to_earnings": 20,
-            "data_quality_ok": True,
-            "uic": 1234,
-        },
-        "portfolio": {
-            "equity": 100000,
-            "cash": 80000,
-            "peak_equity": 100000,
-            "daily_pnl": 0,
-            "open_positions": 0,
-            "gross_exposure": 0,
-            "sector_exposure": {},
-        },
-    }
     headers = {**auth_headers, "Idempotency-Key": "order-key-123456789"}
     with TestClient(create_app(settings)) as client:
+        payload = {"signal_id": executable_signal(client)}
         assert client.post("/v1/orders", headers=headers, json=payload).status_code == 403
         admin = {**admin_headers, "Idempotency-Key": "order-key-123456789"}
         response = client.post("/v1/orders", headers=admin, json=payload)
@@ -95,35 +95,20 @@ def test_paper_order_flow_is_idempotent_and_risk_checked(
     settings: Settings, admin_headers: dict[str, str]
 ) -> None:
     enabled = settings.model_copy(update={"trading_kill_switch": False})
-    payload = {
-        "proposal": {
-            "symbol": "MSFT",
-            "sector": "Technology",
-            "entry_price": 100,
-            "stop_loss": 95,
-            "take_profit": 110,
-            "spread_pct": 0.001,
-            "days_to_earnings": 20,
-            "data_quality_ok": True,
-            "uic": 1234,
-        },
-        "portfolio": {
-            "equity": 100000,
-            "cash": 80000,
-            "peak_equity": 100000,
-            "daily_pnl": 0,
-            "open_positions": 0,
-            "gross_exposure": 0,
-            "sector_exposure": {},
-        },
-    }
     headers = {**admin_headers, "Idempotency-Key": "order-key-123456789"}
     with TestClient(create_app(enabled)) as client:
+        payload = {"signal_id": executable_signal(client)}
         response = client.post("/v1/orders", headers=headers, json=payload)
         assert response.status_code == 201
         assert len(response.json()["related_order_ids"]) == 2
         duplicate = client.post("/v1/orders", headers=headers, json=payload)
         assert duplicate.status_code == 409
+        reused_signal = client.post(
+            "/v1/orders",
+            headers={**admin_headers, "Idempotency-Key": "another-order-key-123456"},
+            json=payload,
+        )
+        assert reused_signal.status_code == 409
 
 
 def test_request_validation_rejects_unknown_fields_and_oversized_symbol(

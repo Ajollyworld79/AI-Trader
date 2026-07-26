@@ -19,6 +19,10 @@ De vigtigste trusler og kontroller er:
 | SSRF | Eksterne base-URL'er valideres mod faste HTTPS-hostnames; job-URL'er afvises |
 | SQL injection | SQLAlchemy ORM og bind-parametre |
 | Secret leakage | Pydantic `SecretStr`, struktureret redaction, ingen tokens i responses eller Git |
+| Stjålet databasebackup | Saxo access- og refresh-tokens gemmes Fernet-krypteret med en separat Railway secret |
+| Samtidig tokenrotation | En kort database-lease serialiserer refresh på tværs af Railway-workers |
+| Manipuleret ordreinput | Execution accepterer kun et gemt signal-id; quote, portefølje, stop, target og quantity fastlægges server-side |
+| Ubeskyttet trailing-skift | Eksisterende stop ændres før den faste take-profit annulleres |
 | DoS | Request-size-grænse, schema limits, Redis-rate-limit, DB/HTTP timeouts |
 | Supply chain | Pinned runtime image, CI med `pip-audit`, Bandit og minimal non-root container |
 
@@ -33,6 +37,8 @@ LIVE må først aktiveres efter:
    `LIVE_TRADING_ENABLED=true`, `TRADING_KILL_SWITCH=false` er gennemgået.
 5. `LIVE_CONFIRMATION_TOKEN_HASH` er en separat nøgle fra API/admin.
 6. Railway access, GitHub branch protection og secret rotation er aktiveret.
+7. Position-workerens reconciliation- og trailing-forløb er verificeret mod
+   Saxo SIM, inklusive genstart mellem de to ordreændringer.
 
 Aktivér aldrig LIVE blot for at teste connectivity.
 

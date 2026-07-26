@@ -19,6 +19,15 @@ ordre.
 - Long-only, ingen gearing, spread-, earnings- og datakvalitetskontrol.
 - Paper broker og Saxo OpenAPI-adapter med pre-check, idempotency og
   broker-native stop/take-profit som relaterede ordrer.
+- Ordreudførelse accepterer kun et frisk, gemt `buy`-signal. Kurser,
+  kontoværdi, eksponering, stop, target og quantity hentes eller beregnes
+  server-side og kan ikke angives af API-klienten.
+- Positions-reconciliation med high-watermark, aktivering af broker-native
+  trailing stop og sikker rækkefølge: stop ændres før fast take-profit fjernes.
+- Krypteret lagring af Saxo access/refresh tokens, så OAuth-rotation overlever
+  Railway-genstarter uden at lægge tokens i loggen eller databasen i klartekst.
+  En database-lease forhindrer samtidige workers i at rotere samme refresh
+  token på én gang.
 - Eventdrevet backtest med commission, spread, slippage, dividends, splits,
   walk-forward-vinduer og en konservativ regel uden look-ahead.
 - Databasehistorik for trades, signals, AI-kald, candles, features, orders,
@@ -41,6 +50,20 @@ Routingen er en kodeinvariant:
 
 Begge providers skal være konfigureret, før AI aktiveres. Mangler én, kører
 platformen videre uden AI og returnerer en fail-closed `hold`.
+
+## Sikkert ordreflow
+
+1. `POST /v1/analysis` gemmer analysen og returnerer et `signal_id`.
+2. `POST /v1/orders` modtager kun `signal_id`, valgfri quantity-grænse og
+   ordretype.
+3. Serveren henter signalet, en frisk broker-quote og brokerens aktuelle
+   portefølje.
+4. Python beregner ATR-stop, profitmål, positionsstørrelse og alle limits.
+5. Saxo pre-check køres, før entry med relateret stop/take-profit placeres.
+6. En accepteret position registreres til løbende reconciliation.
+
+Et signal kan kun forbruges én gang. Klientdata bruges dermed aldrig som
+sandhed for pris, balance eller risiko.
 
 ## Hurtig lokal start
 
@@ -88,7 +111,8 @@ X-Live-Confirmation: <live-key>          # kun LIVE
   en særskilt confirmation token.
 
 Se [SECURITY.md](SECURITY.md) og
-[Railway-guiden](docs/RAILWAY_DEPLOYMENT.md), før du aktiverer eksterne
+[Railway-guiden](docs/RAILWAY_DEPLOYMENT.md). Gennemfør også
+[LIVE-readiness-runbooken](docs/LIVE_READINESS.md), før du aktiverer eksterne
 integrationer.
 
 ## Kvalitetsgates
@@ -103,4 +127,3 @@ integrationer.
 ```
 
 Testpakken håndhæver mindst 80 % coverage.
-SAXO native trader

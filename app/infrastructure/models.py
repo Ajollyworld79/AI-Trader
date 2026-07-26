@@ -72,6 +72,17 @@ class AIInteractionModel(Timestamped, Base):
     success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class BrokerCredentialModel(Timestamped, Base):
+    __tablename__ = "broker_credentials"
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    encrypted_access_token: Mapped[str | None] = mapped_column(Text)
+    encrypted_refresh_token: Mapped[str | None] = mapped_column(Text)
+    access_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refresh_lease_owner: Mapped[str | None] = mapped_column(String(36))
+    refresh_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class CandleModel(Timestamped, Base):
     __tablename__ = "candles"
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -101,6 +112,7 @@ class FeatureModel(Timestamped, Base):
 class OrderModel(Timestamped, Base):
     __tablename__ = "orders"
     idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    signal_id: Mapped[str | None] = mapped_column(String(36), unique=True)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     side: Mapped[str] = mapped_column(String(8), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -110,6 +122,26 @@ class OrderModel(Timestamped, Base):
     broker_order_id: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     mode: Mapped[str] = mapped_column(String(8), nullable=False)
+
+
+class ManagedPositionModel(Timestamped, Base):
+    __tablename__ = "managed_positions"
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    sector: Mapped[str] = mapped_column(String(100), nullable=False)
+    uic: Mapped[int] = mapped_column(Integer, nullable=False)
+    asset_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
+    atr: Mapped[float] = mapped_column(Float, nullable=False)
+    stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
+    take_profit: Mapped[float] = mapped_column(Float, nullable=False)
+    high_watermark: Mapped[float] = mapped_column(Float, nullable=False)
+    broker_entry_order_id: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    broker_stop_order_id: Mapped[str | None] = mapped_column(String(100))
+    broker_take_order_id: Mapped[str | None] = mapped_column(String(100))
+    trailing_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    last_error: Mapped[str | None] = mapped_column(Text)
 
 
 class PortfolioSnapshotModel(Timestamped, Base):

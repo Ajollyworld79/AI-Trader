@@ -141,6 +141,33 @@ class PortfolioState:
 
 
 @dataclass(frozen=True)
+class MarketSnapshot:
+    symbol: str
+    bid: float
+    ask: float
+    as_of: datetime
+    data_quality_ok: bool
+    delayed_minutes: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.symbol or self.bid <= 0 or self.ask <= 0 or self.ask < self.bid:
+            raise ValueError("invalid market snapshot")
+        if self.as_of.tzinfo is None or self.as_of.utcoffset() is None:
+            raise ValueError("market snapshot timestamp must include a timezone")
+        if self.delayed_minutes < 0:
+            raise ValueError("delayed minutes cannot be negative")
+
+    @property
+    def entry_price(self) -> float:
+        return self.ask
+
+    @property
+    def spread_pct(self) -> float:
+        mid = (self.bid + self.ask) / 2.0
+        return (self.ask - self.bid) / mid if mid else 1.0
+
+
+@dataclass(frozen=True)
 class TradeProposal:
     symbol: str
     sector: str

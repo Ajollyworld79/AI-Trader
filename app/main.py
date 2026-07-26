@@ -26,6 +26,7 @@ from app.infrastructure.repositories import Repository
 from app.logging import configure_logging
 from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from app.services.analysis import AnalysisService
+from app.services.positions import PositionManager
 from app.services.trading import TradingService
 
 logger = structlog.get_logger()
@@ -42,6 +43,7 @@ class Container:
     broker: Broker
     analysis_service: AnalysisService
     trading_service: TradingService
+    position_manager: PositionManager
     oauth_states: dict[str, float] = field(default_factory=dict)
 
     def create_oauth_state(self) -> str:
@@ -67,10 +69,11 @@ def build_container(settings: Settings) -> Container:
     analyzer = RoutedMarketAnalyzer(settings, repository)
     risk_engine = RiskEngine(settings)
     broker: Broker = (
-        SaxoBroker(settings) if settings.broker_backend == "saxo" else SimulatedBroker()
+        SaxoBroker(settings, repository) if settings.broker_backend == "saxo" else SimulatedBroker()
     )
     analysis_service = AnalysisService(analyzer, repository)
     trading_service = TradingService(settings, risk_engine, broker, repository)
+    position_manager = PositionManager(settings, broker, repository)
     return Container(
         settings=settings,
         database=database,
@@ -81,6 +84,7 @@ def build_container(settings: Settings) -> Container:
         broker=broker,
         analysis_service=analysis_service,
         trading_service=trading_service,
+        position_manager=position_manager,
     )
 
 

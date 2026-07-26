@@ -43,6 +43,10 @@ class AnalysisRequest(StrictModel):
     candles: list[CandleInput] = Field(min_length=60, max_length=5_000)
     benchmark_closes: list[float] | None = Field(default=None, min_length=21, max_length=5_000)
     news: list[str] = Field(default_factory=list, max_length=20)
+    sector: str = Field(default="Unknown", min_length=1, max_length=100)
+    uic: int | None = Field(default=None, ge=1)
+    asset_type: str = Field(default="Stock", pattern=r"^[A-Za-z]{2,32}$")
+    days_to_earnings: int | None = Field(default=None, ge=0, le=365)
 
     @field_validator("news")
     @classmethod
@@ -53,6 +57,7 @@ class AnalysisRequest(StrictModel):
 
 
 class AnalysisResponse(StrictModel):
+    signal_id: str
     features: dict[str, float | str]
     decision: Literal["buy", "hold", "reject"]
     confidence: float
@@ -116,8 +121,10 @@ class RiskResponse(StrictModel):
     take_profit: float
 
 
-class OrderRequest(RiskRequest):
-    pass
+class OrderRequest(StrictModel):
+    signal_id: str = Field(min_length=36, max_length=36)
+    requested_quantity: int | None = Field(default=None, ge=1, le=10_000_000)
+    order_type: OrderType = OrderType.MARKET
 
 
 class OrderResponse(StrictModel):
@@ -161,6 +168,7 @@ class SystemStatusResponse(StrictModel):
 
 class DashboardResponse(StrictModel):
     ai_usage: dict[str, float | int]
+    portfolio: dict[str, float | int]
     ai_budget_dkk: float
     trading_mode: str
     trading_kill_switch: bool

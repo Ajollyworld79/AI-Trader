@@ -4,6 +4,7 @@ import asyncio
 import signal
 import uuid
 from contextlib import suppress
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -12,10 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+from app.broker.saxo import SaxoBroker
 from app.config import get_settings
-from app.infrastructure.database import Database
-from app.infrastructure.repositories import Repository
+from app.domain.entities import Candle, Decision, OrderType
 from app.logging import configure_logging
+from app.main import build_container
 
 logger = structlog.get_logger()
 
@@ -23,7 +25,7 @@ logger = structlog.get_logger()
 class Job(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(min_length=16, max_length=64)
+    id: str = Field(min_length=16, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     type: Literal[
         "market_scan",
         "strategy_evaluation",
@@ -43,8 +45,8 @@ class Worker:
         if not self.settings.redis_url:
             raise RuntimeError("workers require REDIS_URL")
         self.redis = Redis.from_url(self.settings.redis_url, decode_responses=True)
-        self.database = Database(self.settings)
-        self.repository = Repository(self.database)
+        self.container = build_container(self.settings)
+        self.repository = self.container.repository
         self.stop = asyncio.Event()
 
     async def run(self) -> None:
@@ -58,23 +60,52 @@ class Worker:
             except RedisError as exc:
                 logger.warning("worker_redis_error", error_type=type(exc).__name__)
                 await asyncio.sleep(5)
+            except Exception as exc:
+                logger.exception("worker_iteration_failed", error_type=type(exc).__name__)
+                await asyncio.sleep(5)
 
     async def close(self) -> None:
         self.stop.set()
         await self.redis.close()
-        self.database.engine.dispose()
+        await self.container.rate_limiter.close()
+        if isinstance(self.container.broker, SaxoBroker):
+            await self.container.broker.close()
+        self.container.database.engine.dispose()
 
     async def _schedule(self) -> None:
-        job = Job(
-            id=uuid.uuid4().hex,
-            type="market_scan",
-            created_at=datetime.now(UTC),
-            payload={"source": "scheduler"},
+        now = datetime.now(UTC)
+        for instrument in self.settings.trading_universe:
+            await self._enqueue("market", "market_scan", dict(instrument), now)
+        await self._enqueue("position", "position_reconciliation", {}, now)
+        await self._enqueue("news", "news_refresh", {}, now)
+        logger.info(
+            "jobs_scheduled",
+            instruments=len(self.settings.trading_universe),
+            position_reconciliation=True,
         )
-        await self.redis.lpush("ai-tader:market", job.model_dump_json())
-        logger.info("job_scheduled", job_id=job.id, job_type=job.type)
         with suppress(TimeoutError):
             await asyncio.wait_for(self.stop.wait(), timeout=60)
+
+    async def _enqueue(
+        self,
+        role: str,
+        job_type: Literal[
+            "market_scan",
+            "strategy_evaluation",
+            "execution_review",
+            "position_reconciliation",
+            "news_refresh",
+        ],
+        payload: dict[str, Any],
+        created_at: datetime | None = None,
+    ) -> None:
+        job = Job(
+            id=uuid.uuid4().hex,
+            type=job_type,
+            created_at=created_at or datetime.now(UTC),
+            payload=payload,
+        )
+        await self.redis.lpush(f"ai-tader:{role}", job.model_dump_json())
 
     async def _consume(self) -> None:
         result = await self.redis.brpop(f"ai-tader:{self.settings.app_role}", timeout=5)
@@ -89,7 +120,23 @@ class Worker:
         except ValidationError:
             logger.warning("job_rejected", reason="invalid_schema")
             return
-        await self._handle(job)
+        claimed = await self.redis.set(f"ai-tader:job:{job.id}", "1", ex=86_400, nx=True)
+        if not claimed:
+            logger.info("job_duplicate_ignored", job_id=job.id)
+            return
+        try:
+            await self._handle(job)
+        except Exception as exc:
+            await self.redis.lpush(
+                "ai-tader:dead-letter",
+                Job(
+                    id=job.id,
+                    type=job.type,
+                    created_at=job.created_at,
+                    payload={"error_type": type(exc).__name__},
+                ).model_dump_json(),
+            )
+            raise
 
     async def _handle(self, job: Job) -> None:
         allowed: dict[str, set[str]] = {
@@ -107,20 +154,137 @@ class Worker:
                 job_type=job.type,
             )
             return
-        # Jobs are intentionally data-only. They cannot carry Python, URLs, shell
-        # commands, credentials or executable tool definitions.
         forbidden = {"command", "code", "url", "authorization", "token", "secret"}
         if forbidden.intersection(key.lower() for key in job.payload):
             logger.warning("job_rejected", job_id=job.id, reason="forbidden_field")
             return
+        if job.type == "market_scan":
+            await self._market_scan(job)
+        elif job.type == "strategy_evaluation":
+            await self._strategy_evaluation(job)
+        elif job.type == "execution_review":
+            await self._execution_review(job)
+        elif job.type == "position_reconciliation":
+            await self.container.position_manager.reconcile()
+        elif job.type == "news_refresh":
+            await self._news_refresh(job)
         self.repository.record_audit(
             event_type=f"worker_{job.type}",
             actor_hash="internal-worker",
             correlation_id=job.id,
-            outcome="accepted",
+            outcome="completed",
             details={"role": self.settings.app_role},
         )
         logger.info("job_completed", job_id=job.id, job_type=job.type)
+
+    async def _market_scan(self, job: Job) -> None:
+        symbol = self._required_str(job.payload, "symbol")
+        sector = self._required_str(job.payload, "sector")
+        asset_type = self._required_str(job.payload, "asset_type")
+        uic = self._required_int(job.payload, "uic")
+        candles = await self.container.broker.historical_candles(
+            uic=uic,
+            asset_type=asset_type,
+            horizon_minutes=self.settings.market_horizon_minutes,
+            count=self.settings.market_candle_count,
+        )
+        if len(candles) < 62:
+            raise ValueError(f"insufficient candles for {symbol}")
+        for candle in candles:
+            values = asdict(candle)
+            self.repository.save_candle(
+                symbol=symbol,
+                timeframe=f"{self.settings.market_horizon_minutes}m",
+                **values,
+            )
+        await self._enqueue(
+            "strategy",
+            "strategy_evaluation",
+            {
+                "symbol": symbol,
+                "sector": sector,
+                "asset_type": asset_type,
+                "uic": uic,
+                "candles": [
+                    {**asdict(candle), "timestamp": candle.timestamp.isoformat()}
+                    for candle in candles
+                ],
+            },
+        )
+
+    async def _strategy_evaluation(self, job: Job) -> None:
+        raw_candles = job.payload.get("candles")
+        if not isinstance(raw_candles, list):
+            raise ValueError("strategy job is missing candles")
+        candles: list[Candle] = []
+        for raw in raw_candles:
+            if not isinstance(raw, dict):
+                raise ValueError("invalid candle payload")
+            values = dict(raw)
+            raw_timestamp = values.get("timestamp")
+            if not isinstance(raw_timestamp, str):
+                raise ValueError("invalid candle timestamp")
+            values["timestamp"] = datetime.fromisoformat(raw_timestamp)
+            candles.append(Candle(**values))
+        features, analysis, signal_id = await self.container.analysis_service.analyze(
+            symbol=self._required_str(job.payload, "symbol"),
+            candles=candles,
+            benchmark_closes=None,
+            news=None,
+            sector=self._required_str(job.payload, "sector"),
+            uic=self._required_int(job.payload, "uic"),
+            asset_type=self._required_str(job.payload, "asset_type"),
+            days_to_earnings=None,
+        )
+        del features
+        if analysis.decision is Decision.BUY and self.settings.auto_execute_signals:
+            await self._enqueue(
+                "execution",
+                "execution_review",
+                {"signal_id": signal_id},
+            )
+
+    async def _execution_review(self, job: Job) -> None:
+        if not self.settings.auto_execute_signals:
+            raise ValueError("automatic execution is disabled")
+        signal_id = self._required_str(job.payload, "signal_id")
+        live_confirmation = (
+            self.settings.worker_live_confirmation_token.get_secret_value()
+            if self.settings.worker_live_confirmation_token
+            else None
+        )
+        await self.container.trading_service.execute_signal(
+            signal_id=signal_id,
+            requested_quantity=None,
+            order_type=OrderType.MARKET,
+            idempotency_key=job.id,
+            actor_key="internal-worker",
+            correlation_id=job.id,
+            live_confirmation=live_confirmation,
+        )
+
+    async def _news_refresh(self, job: Job) -> None:
+        items = job.payload.get("items", [])
+        if not isinstance(items, list):
+            raise ValueError("news items must be a list")
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("invalid news item")
+            self.repository.save_news(**item)
+
+    @staticmethod
+    def _required_str(payload: dict[str, Any], key: str) -> str:
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"missing {key}")
+        return value
+
+    @staticmethod
+    def _required_int(payload: dict[str, Any], key: str) -> int:
+        value = payload.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"missing {key}")
+        return value
 
 
 async def main() -> None:

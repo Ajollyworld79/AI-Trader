@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -38,6 +39,8 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     trading_kill_switch: bool = True
     live_confirmation_token_hash: SecretStr | None = None
+    worker_live_confirmation_token: SecretStr | None = None
+    token_encryption_key: SecretStr | None = None
 
     max_risk_per_trade: float = Field(default=0.005, gt=0, le=0.02)
     max_open_positions: int = Field(default=10, ge=1, le=100)
@@ -46,6 +49,17 @@ class Settings(BaseSettings):
     max_drawdown: float = Field(default=0.10, gt=0, le=0.50)
     max_spread_pct: float = Field(default=0.005, gt=0, le=0.05)
     earnings_blackout_days: int = Field(default=2, ge=0, le=30)
+    atr_stop_multiple: float = Field(default=2.0, gt=0, le=10)
+    reward_risk_ratio: float = Field(default=2.0, ge=1, le=10)
+    signal_max_age_minutes: int = Field(default=90, ge=1, le=1_440)
+    max_market_data_age_seconds: int = Field(default=120, ge=5, le=3_600)
+    trailing_activation_pct: float = Field(default=0.08, gt=0, le=1)
+    trailing_distance_atr: float = Field(default=2.0, gt=0, le=10)
+    trailing_step_atr: float = Field(default=0.5, gt=0, le=5)
+    trading_universe_json: str = "[]"
+    auto_execute_signals: bool = False
+    market_horizon_minutes: int = Field(default=60, ge=1, le=10_080)
+    market_candle_count: int = Field(default=120, ge=62, le=1_200)
 
     azure_openai_api_key: SecretStr | None = None
     azure_openai_endpoint: str | None = None
@@ -128,6 +142,8 @@ class Settings(BaseSettings):
                 raise ValueError("LIVE mode cannot start while TRADING_KILL_SWITCH=true")
             if not self.live_confirmation_token_hash:
                 raise ValueError("LIVE mode requires LIVE_CONFIRMATION_TOKEN_HASH")
+            if self.auto_execute_signals and not self.worker_live_confirmation_token:
+                raise ValueError("LIVE automatic execution requires WORKER_LIVE_CONFIRMATION_TOKEN")
             if not all(
                 (
                     self.saxo_app_key,
@@ -136,6 +152,8 @@ class Settings(BaseSettings):
                 )
             ):
                 raise ValueError("LIVE mode requires Saxo application and account credentials")
+            if not self.token_encryption_key:
+                raise ValueError("LIVE mode requires TOKEN_ENCRYPTION_KEY")
         if self.environment == "production":
             if not self.api_key_hash_list or not self.admin_key_hash_list:
                 raise ValueError("production requires both API_KEY_HASHES and ADMIN_KEY_HASHES")
@@ -174,6 +192,45 @@ class Settings(BaseSettings):
     @property
     def admin_key_hash_list(self) -> tuple[str, ...]:
         return self._split_hashes(self.admin_key_hashes)
+
+    @property
+    def trading_universe(self) -> tuple[dict[str, Any], ...]:
+        try:
+            raw = json.loads(self.trading_universe_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("TRADING_UNIVERSE_JSON must be valid JSON") from exc
+        if not isinstance(raw, list) or len(raw) > 500:
+            raise ValueError("TRADING_UNIVERSE_JSON must contain at most 500 instruments")
+        result: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                raise ValueError("each universe entry must be an object")
+            entry = cast(dict[str, Any], item)
+            symbol = entry.get("symbol")
+            uic = entry.get("uic")
+            sector = entry.get("sector")
+            asset_type = entry.get("asset_type", "Stock")
+            if (
+                not isinstance(symbol, str)
+                or not symbol
+                or len(symbol) > 32
+                or not isinstance(uic, int)
+                or isinstance(uic, bool)
+                or uic <= 0
+                or not isinstance(sector, str)
+                or not sector
+                or not isinstance(asset_type, str)
+            ):
+                raise ValueError("invalid trading universe entry")
+            result.append(
+                {
+                    "symbol": symbol.upper(),
+                    "uic": uic,
+                    "sector": sector,
+                    "asset_type": asset_type,
+                }
+            )
+        return tuple(result)
 
     @property
     def allowed_host_list(self) -> list[str]:

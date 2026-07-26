@@ -29,6 +29,8 @@ ADMIN_KEY_HASHES=<sha256>
 TRADING_MODE=sim
 BROKER_BACKEND=paper
 TRADING_KILL_SWITCH=true
+TRADING_UNIVERSE_JSON=[]
+AUTO_EXECUTE_SIGNALS=false
 ```
 
 AI aktiveres kun med hele sættet:
@@ -51,6 +53,20 @@ AI_OPENAI_SOL_OUTPUT_DKK_PER_M
 Priserne skal være de faktiske DKK-priser for dine deployments. Systemet
 afviser delvis provider-konfiguration, så SOL aldrig ender på Azure og Mini har
 en reel OpenAI fallback.
+
+Saxo-services kræver desuden:
+
+```text
+SAXO_APP_KEY
+SAXO_APP_SECRET
+SAXO_REDIRECT_URI
+SAXO_ACCOUNT_KEY
+TOKEN_ENCRYPTION_KEY=<Fernet key>
+```
+
+Generér `TOKEN_ENCRYPTION_KEY` én gang, gem den som Railway secret og rotér den
+kun med en planlagt gen-login-proces. Mister du nøglen, kan allerede gemte
+refresh tokens ikke dekrypteres.
 
 ## Deploy
 
@@ -82,3 +98,14 @@ APP_ROLE=scheduler
 
 Workers skal ikke have public domain. Giv kun execution/position-worker Saxo-
 credentials; øvrige services skal følge least privilege.
+
+Schedulerens univers er en JSON-liste, eksempelvis:
+
+```text
+TRADING_UNIVERSE_JSON=[{"symbol":"MSFT","sector":"Technology","asset_type":"Stock","uic":1234}]
+```
+
+Hold `AUTO_EXECUTE_SIGNALS=false`, indtil market-, strategy- og position-
+workers har kørt stabilt i SIM. Ved automatisk LIVE-execution kræves desuden
+`WORKER_LIVE_CONFIRMATION_TOKEN`, som skal matche den hash, API'et bruger til
+LIVE confirmation.
