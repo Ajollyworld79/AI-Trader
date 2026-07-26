@@ -41,8 +41,9 @@ ordre.
   og audit logs.
 - Separate workerroller til market, strategy, execution, position, news og
   scheduler.
-- Docker, Railway config og GitHub Actions med test, lint, typing,
-  dependency-audit og container-build.
+- Docker og Railway-konfiguration til build, migration, healthcheck og drift.
+- Lokale kvalitetskontroller med test, lint, typing og dependency-audit før
+  ændringer pushes til Railway-kilden.
 
 ## AI-routing
 
