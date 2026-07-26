@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -13,8 +13,10 @@ from app.infrastructure.models import (
     BacktestModel,
     BrokerCredentialModel,
     CandleModel,
+    EarningsEventModel,
     FeatureModel,
     ManagedPositionModel,
+    MarketRegimeModel,
     NewsModel,
     OrderModel,
     PerformanceModel,
@@ -159,11 +161,131 @@ class Repository:
             return model.id
 
     def save_news(self, **values: Any) -> str:
+        try:
+            with self.database.session() as session:
+                model = NewsModel(**values)
+                session.add(model)
+                session.flush()
+                return model.id
+        except IntegrityError:
+            return ""
+
+    def save_earnings(self, **values: Any) -> str:
+        try:
+            with self.database.session() as session:
+                model = EarningsEventModel(**values)
+                session.add(model)
+                session.flush()
+                return model.id
+        except IntegrityError:
+            return ""
+
+    def save_market_regime(self, **values: Any) -> str:
+        try:
+            with self.database.session() as session:
+                model = MarketRegimeModel(**values)
+                session.add(model)
+                session.flush()
+                return model.id
+        except IntegrityError:
+            return ""
+
+    def recent_news_context(self, symbol: str, *, max_age_hours: int, limit: int = 20) -> list[str]:
+        cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
         with self.database.session() as session:
-            model = NewsModel(**values)
-            session.add(model)
-            session.flush()
-            return model.id
+            models = session.scalars(
+                select(NewsModel)
+                .where(
+                    NewsModel.published_at >= cutoff,
+                    (NewsModel.symbol == symbol.upper()) | NewsModel.symbol.is_(None),
+                )
+                .order_by(NewsModel.published_at.desc())
+                .limit(limit)
+            ).all()
+            return [
+                " | ".join(
+                    part
+                    for part in (
+                        model.published_at.isoformat(),
+                        model.source[:100],
+                        model.sentiment or "unknown",
+                        model.headline[:500],
+                        str(model.payload.get("summary", ""))[:1_000],
+                    )
+                    if part
+                )
+                for model in models
+            ]
+
+    def days_to_next_earnings(self, symbol: str) -> int | None:
+        today = datetime.now(UTC).date()
+        with self.database.session() as session:
+            report_date = session.scalar(
+                select(EarningsEventModel.report_date)
+                .where(
+                    EarningsEventModel.symbol == symbol.upper(),
+                    EarningsEventModel.report_date >= today,
+                )
+                .order_by(EarningsEventModel.report_date)
+                .limit(1)
+            )
+            if report_date is None:
+                return None
+            if isinstance(report_date, datetime):
+                report_date = report_date.date()
+            return (report_date - today).days
+
+    def latest_market_regime(self) -> dict[str, Any] | None:
+        with self.database.session() as session:
+            model = session.scalar(
+                select(MarketRegimeModel).order_by(MarketRegimeModel.as_of.desc()).limit(1)
+            )
+            if model is None:
+                return None
+            as_of = model.as_of
+            if as_of.tzinfo is None:
+                as_of = as_of.replace(tzinfo=UTC)
+            return {
+                "benchmark_symbol": model.benchmark_symbol,
+                "as_of": as_of,
+                "regime": model.regime,
+                "close": model.close,
+                "volatility": model.volatility,
+                "adx": model.adx,
+                "data_quality_ok": model.data_quality_ok,
+            }
+
+    def latest_candle_closes(self, symbol: str, timeframe: str, *, limit: int) -> list[float]:
+        with self.database.session() as session:
+            rows = session.scalars(
+                select(CandleModel.close)
+                .where(CandleModel.symbol == symbol, CandleModel.timeframe == timeframe)
+                .order_by(CandleModel.timestamp.desc())
+                .limit(limit)
+            ).all()
+            return [float(value) for value in reversed(rows)]
+
+    def market_intelligence_summary(self) -> dict[str, Any]:
+        with self.database.session() as session:
+            news_count = session.scalar(select(func.count(NewsModel.id)))
+            earnings_count = session.scalar(select(func.count(EarningsEventModel.id)))
+            latest_news = session.scalar(
+                select(NewsModel.published_at).order_by(NewsModel.published_at.desc()).limit(1)
+            )
+        regime = self.latest_market_regime()
+        return {
+            "news_items": int(news_count or 0),
+            "earnings_events": int(earnings_count or 0),
+            "latest_news_at": latest_news.isoformat() if latest_news else None,
+            "market_regime": (
+                {
+                    **regime,
+                    "as_of": regime["as_of"].isoformat(),
+                }
+                if regime
+                else None
+            ),
+        }
 
     def save_portfolio_snapshot(self, **values: Any) -> str:
         with self.database.session() as session:

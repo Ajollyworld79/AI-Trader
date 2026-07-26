@@ -31,6 +31,8 @@ BROKER_BACKEND=paper
 TRADING_KILL_SWITCH=true
 TRADING_UNIVERSE_JSON=[]
 AUTO_EXECUTE_SIGNALS=false
+ALPHA_VANTAGE_API_KEY=<secret>
+MARKET_BENCHMARK_JSON={"symbol":"SPY","asset_type":"Stock","uic":<verified-saxo-uic>}
 ```
 
 AI aktiveres kun med hele sættet:
@@ -96,8 +98,9 @@ APP_ROLE=news
 APP_ROLE=scheduler
 ```
 
-Workers skal ikke have public domain. Giv kun execution/position-worker Saxo-
-credentials; øvrige services skal følge least privilege.
+Workers skal ikke have public domain. Giv execution/position-worker Saxo-
+credentials. Market-workeren skal have læseadgang til Saxo, news-workeren kun
+`ALPHA_VANTAGE_API_KEY`, og øvrige services skal følge least privilege.
 
 Schedulerens univers er en JSON-liste, eksempelvis:
 
@@ -109,3 +112,8 @@ Hold `AUTO_EXECUTE_SIGNALS=false`, indtil market-, strategy- og position-
 workers har kørt stabilt i SIM. Ved automatisk LIVE-execution kræves desuden
 `WORKER_LIVE_CONFIRMATION_TOKEN`, som skal matche den hash, API'et bruger til
 LIVE confirmation.
+
+Schedulerens standarder er en markedsscan hver time og news/earnings hver
+sjette time. Redis-bucket locks forhindrer dubletter på tværs af scheduler-
+replicas. Med to Alpha Vantage-kald pr. refresh er standarden otte kald pr.
+døgn.

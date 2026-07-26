@@ -98,6 +98,9 @@ class TradeProposalInput(StrictModel):
     spread_pct: float = Field(ge=0, le=0.10)
     days_to_earnings: int | None = Field(default=None, ge=0, le=365)
     data_quality_ok: bool
+    market_regime: Literal[
+        "unknown", "bullish_trending", "bearish_trending", "sideways", "extreme_volatility"
+    ] = "unknown"
     requested_quantity: int | None = Field(default=None, ge=1, le=10_000_000)
     uic: int | None = Field(default=None, ge=1)
     asset_type: str = Field(default="Stock", pattern=r"^[A-Za-z]{2,32}$")
@@ -169,6 +172,7 @@ class SystemStatusResponse(StrictModel):
 class DashboardResponse(StrictModel):
     ai_usage: dict[str, float | int]
     portfolio: dict[str, float | int]
+    market_intelligence: dict[str, Any]
     ai_budget_dkk: float
     trading_mode: str
     trading_kill_switch: bool

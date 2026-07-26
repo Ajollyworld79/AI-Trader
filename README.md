@@ -17,6 +17,12 @@ ordre.
 - Risk engine med 0,5 % risiko pr. handel, højst 10 positioner, 20 %
   sektoreksponering, 2 % dagligt tab og 10 % drawdown.
 - Long-only, ingen gearing, spread-, earnings- og datakvalitetskontrol.
+- Automatisk Alpha Vantage-feed til nyheder/sentiment og kommende
+  regnskabsdatoer. Data deduplikeres, begrænses og behandles som utroværdigt
+  input.
+- Saxo-baseret benchmarkanalyse, som klassificerer markedet deterministisk som
+  bullish trend, bearish trend, sidelæns eller ekstrem volatilitet. Bearish og
+  ekstremt volatile regimer afviser nye long-handler før AI.
 - Paper broker og Saxo OpenAPI-adapter med pre-check, idempotency og
   broker-native stop/take-profit som relaterede ordrer.
 - Ordreudførelse accepterer kun et frisk, gemt `buy`-signal. Kurser,
@@ -31,7 +37,8 @@ ordre.
 - Eventdrevet backtest med commission, spread, slippage, dividends, splits,
   walk-forward-vinduer og en konservativ regel uden look-ahead.
 - Databasehistorik for trades, signals, AI-kald, candles, features, orders,
-  portfolio snapshots, performance, news, backtests og audit logs.
+  portfolio snapshots, performance, news, earnings, market regimes, backtests
+  og audit logs.
 - Separate workerroller til market, strategy, execution, position, news og
   scheduler.
 - Docker, Railway config og GitHub Actions med test, lint, typing,
@@ -108,7 +115,23 @@ X-Live-Confirmation: <live-key>          # kun LIVE
 - Ordre-POSTs retries aldrig automatisk; uklar brokerstatus markeres til
   reconciliation for at undgå dobbeltordrer.
 - LIVE kræver Saxo, `LIVE_TRADING_ENABLED=true`, deaktiveret kill switch og
-  en særskilt confirmation token.
+  en særskilt confirmation token. En frisk benchmarkanalyse og autoritativ
+  earnings-status er også obligatorisk.
+
+## Nyheder og markedsanalyse
+
+News-workeren henter én global `NEWS_SENTIMENT`-feed og én samlet
+`EARNINGS_CALENDAR` pr. refresh fra
+[Alpha Vantage](https://www.alphavantage.co/documentation/). Standardintervallet
+er seks timer, altså otte requests pr. døgn; den dokumenterede gratis kvote er
+25 requests pr. døgn
+([providerens supportside](https://www.alphavantage.co/support/)).
+
+Market-workeren henter benchmark-candles gennem Saxos chart-endpoint og
+beregner regime, volatilitet og trend i Python. Strategy-workeren samler
+benchmarkets slutkurser, seneste friske regime, relevante nyheder og næste
+regnskabsdato før Mini/SOL-vurderingen. Dashboardet viser status under
+`market_intelligence`.
 
 Se [SECURITY.md](SECURITY.md) og
 [Railway-guiden](docs/RAILWAY_DEPLOYMENT.md). Gennemfør også

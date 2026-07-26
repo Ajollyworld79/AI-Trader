@@ -25,9 +25,21 @@ class AnalysisService:
         uic: int | None = None,
         asset_type: str = "Stock",
         days_to_earnings: int | None = None,
+        market_context: dict[str, object] | None = None,
     ) -> tuple[FeatureSet, AIAnalysis, str]:
         features = compute_features(candles, benchmark_closes)
-        if not is_interesting(features, candles[-1].close):
+        market_regime = str((market_context or {}).get("regime", "unknown"))
+        market_data_ok = bool((market_context or {}).get("data_quality_ok", False))
+        if market_regime in {"bearish_trending", "extreme_volatility"}:
+            analysis = AIAnalysis(
+                decision=Decision.REJECT,
+                confidence=1.0,
+                reason=f"Deterministic market regime rejected the setup: {market_regime}",
+                risk_flags=(f"market_regime_{market_regime}",),
+                model_tier="none",
+                provider="none",
+            )
+        elif not is_interesting(features, candles[-1].close):
             analysis = AIAnalysis(
                 decision=Decision.REJECT,
                 confidence=1.0,
@@ -41,6 +53,7 @@ class AnalysisService:
                 symbol=symbol,
                 features=features,
                 news=news,
+                market_context=market_context,
             )
         feature_snapshot: dict[str, Any] = features.to_safe_ai_payload()
         self.repository.save_feature(
@@ -56,6 +69,9 @@ class AnalysisService:
             "uic": uic,
             "asset_type": asset_type,
             "days_to_earnings": days_to_earnings,
+            "market_regime": market_regime,
+            "market_regime_as_of": (market_context or {}).get("as_of"),
+            "market_data_quality_ok": market_data_ok,
         }
         signal_id = self.repository.save_signal(
             symbol=symbol,

@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     auto_execute_signals: bool = False
     market_horizon_minutes: int = Field(default=60, ge=1, le=10_080)
     market_candle_count: int = Field(default=120, ge=62, le=1_200)
+    market_scan_interval_seconds: int = Field(default=3_600, ge=60, le=86_400)
+    market_benchmark_json: str = "{}"
+    max_market_regime_age_seconds: int = Field(default=7_200, ge=60, le=86_400)
+    market_extreme_volatility: float = Field(default=0.60, gt=0, le=5)
+
+    alpha_vantage_api_key: SecretStr | None = None
+    news_refresh_seconds: int = Field(default=21_600, ge=3_600, le=86_400)
+    news_lookback_hours: int = Field(default=24, ge=1, le=168)
+    news_max_articles: int = Field(default=200, ge=1, le=1_000)
+    news_max_age_hours: int = Field(default=48, ge=1, le=168)
 
     azure_openai_api_key: SecretStr | None = None
     azure_openai_endpoint: str | None = None
@@ -154,6 +164,10 @@ class Settings(BaseSettings):
                 raise ValueError("LIVE mode requires Saxo application and account credentials")
             if not self.token_encryption_key:
                 raise ValueError("LIVE mode requires TOKEN_ENCRYPTION_KEY")
+            if not self.alpha_vantage_api_key:
+                raise ValueError("LIVE mode requires ALPHA_VANTAGE_API_KEY")
+            if not self.market_benchmark:
+                raise ValueError("LIVE mode requires MARKET_BENCHMARK_JSON")
         if self.environment == "production":
             if not self.api_key_hash_list or not self.admin_key_hash_list:
                 raise ValueError("production requires both API_KEY_HASHES and ADMIN_KEY_HASHES")
@@ -231,6 +245,33 @@ class Settings(BaseSettings):
                 }
             )
         return tuple(result)
+
+    @property
+    def market_benchmark(self) -> dict[str, Any] | None:
+        try:
+            raw = json.loads(self.market_benchmark_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("MARKET_BENCHMARK_JSON must be valid JSON") from exc
+        if raw == {}:
+            return None
+        if not isinstance(raw, dict):
+            raise ValueError("MARKET_BENCHMARK_JSON must be an object")
+        entry = cast(dict[str, Any], raw)
+        symbol = entry.get("symbol")
+        uic = entry.get("uic")
+        asset_type = entry.get("asset_type", "Stock")
+        if (
+            not isinstance(symbol, str)
+            or not symbol
+            or len(symbol) > 32
+            or not isinstance(uic, int)
+            or isinstance(uic, bool)
+            or uic <= 0
+            or not isinstance(asset_type, str)
+            or not asset_type
+        ):
+            raise ValueError("invalid MARKET_BENCHMARK_JSON")
+        return {"symbol": symbol.upper(), "uic": uic, "asset_type": asset_type}
 
     @property
     def allowed_host_list(self) -> list[str]:

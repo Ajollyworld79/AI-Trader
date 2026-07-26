@@ -52,6 +52,11 @@ def test_risk_engine_rejects_every_policy_boundary(settings: Settings) -> None:
         (proposal(spread_pct=0.02), portfolio(), "spread_too_wide"),
         (proposal(days_to_earnings=1), portfolio(), "earnings_blackout"),
         (proposal(data_quality_ok=False), portfolio(), "data_quality_failure"),
+        (
+            proposal(market_regime="extreme_volatility"),
+            portfolio(),
+            "market_regime_extreme_volatility",
+        ),
         (proposal(), portfolio(open_positions=10), "max_open_positions"),
         (proposal(), portfolio(daily_pnl=-2_100), "max_daily_loss"),
         (proposal(), portfolio(equity=89_000), "max_drawdown"),

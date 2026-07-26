@@ -16,6 +16,7 @@ from redis.exceptions import RedisError
 from app.broker.saxo import SaxoBroker
 from app.config import get_settings
 from app.domain.entities import Candle, Decision, OrderType
+from app.domain.market import classify_market_regime
 from app.logging import configure_logging
 from app.main import build_container
 
@@ -28,6 +29,7 @@ class Job(BaseModel):
     id: str = Field(min_length=16, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     type: Literal[
         "market_scan",
+        "benchmark_scan",
         "strategy_evaluation",
         "execution_review",
         "position_reconciliation",
@@ -70,18 +72,37 @@ class Worker:
         await self.container.rate_limiter.close()
         if isinstance(self.container.broker, SaxoBroker):
             await self.container.broker.close()
+        if self.container.market_intelligence:
+            await self.container.market_intelligence.close()
         self.container.database.engine.dispose()
 
     async def _schedule(self) -> None:
         now = datetime.now(UTC)
-        for instrument in self.settings.trading_universe:
-            await self._enqueue("market", "market_scan", dict(instrument), now)
-        await self._enqueue("position", "position_reconciliation", {}, now)
-        await self._enqueue("news", "news_refresh", {}, now)
+        market_scheduled = await self._claim_schedule(
+            "market", self.settings.market_scan_interval_seconds, now
+        )
+        if market_scheduled:
+            benchmark = self.settings.market_benchmark
+            if benchmark:
+                await self._enqueue("market", "benchmark_scan", dict(benchmark), now)
+            for instrument in self.settings.trading_universe:
+                await self._enqueue("market", "market_scan", dict(instrument), now)
+        position_scheduled = await self._claim_schedule("position", 60, now)
+        if position_scheduled:
+            await self._enqueue("position", "position_reconciliation", {}, now)
+        news_scheduled = False
+        if self.settings.alpha_vantage_api_key:
+            news_scheduled = await self._claim_schedule(
+                "news", self.settings.news_refresh_seconds, now
+            )
+            if news_scheduled:
+                await self._enqueue("news", "news_refresh", {}, now)
         logger.info(
             "jobs_scheduled",
-            instruments=len(self.settings.trading_universe),
-            position_reconciliation=True,
+            instruments=len(self.settings.trading_universe) if market_scheduled else 0,
+            market=market_scheduled,
+            position_reconciliation=position_scheduled,
+            news=news_scheduled,
         )
         with suppress(TimeoutError):
             await asyncio.wait_for(self.stop.wait(), timeout=60)
@@ -91,6 +112,7 @@ class Worker:
         role: str,
         job_type: Literal[
             "market_scan",
+            "benchmark_scan",
             "strategy_evaluation",
             "execution_review",
             "position_reconciliation",
@@ -106,6 +128,17 @@ class Worker:
             payload=payload,
         )
         await self.redis.lpush(f"ai-tader:{role}", job.model_dump_json())
+
+    async def _claim_schedule(self, name: str, interval: int, now: datetime) -> bool:
+        bucket = int(now.timestamp()) // interval
+        return bool(
+            await self.redis.set(
+                f"ai-tader:schedule:{name}:{bucket}",
+                "1",
+                ex=interval * 2,
+                nx=True,
+            )
+        )
 
     async def _consume(self) -> None:
         result = await self.redis.brpop(f"ai-tader:{self.settings.app_role}", timeout=5)
@@ -140,7 +173,7 @@ class Worker:
 
     async def _handle(self, job: Job) -> None:
         allowed: dict[str, set[str]] = {
-            "market": {"market_scan"},
+            "market": {"market_scan", "benchmark_scan"},
             "strategy": {"strategy_evaluation"},
             "execution": {"execution_review"},
             "position": {"position_reconciliation"},
@@ -160,6 +193,8 @@ class Worker:
             return
         if job.type == "market_scan":
             await self._market_scan(job)
+        elif job.type == "benchmark_scan":
+            await self._benchmark_scan(job)
         elif job.type == "strategy_evaluation":
             await self._strategy_evaluation(job)
         elif job.type == "execution_review":
@@ -212,6 +247,40 @@ class Worker:
             },
         )
 
+    async def _benchmark_scan(self, job: Job) -> None:
+        symbol = self._required_str(job.payload, "symbol")
+        asset_type = self._required_str(job.payload, "asset_type")
+        uic = self._required_int(job.payload, "uic")
+        candles = await self.container.broker.historical_candles(
+            uic=uic,
+            asset_type=asset_type,
+            horizon_minutes=self.settings.market_horizon_minutes,
+            count=self.settings.market_candle_count,
+        )
+        if len(candles) < 62:
+            raise ValueError(f"insufficient benchmark candles for {symbol}")
+        timeframe = f"{self.settings.market_horizon_minutes}m"
+        for candle in candles:
+            self.repository.save_candle(
+                symbol=symbol,
+                timeframe=timeframe,
+                **asdict(candle),
+            )
+        regime = classify_market_regime(
+            candles,
+            extreme_volatility=self.settings.market_extreme_volatility,
+        )
+        self.repository.save_market_regime(
+            benchmark_symbol=symbol,
+            as_of=candles[-1].timestamp,
+            regime=regime.regime,
+            close=regime.close,
+            volatility=regime.volatility,
+            adx=regime.adx,
+            data_quality_ok=regime.data_quality_ok,
+            payload=regime.to_payload(),
+        )
+
     async def _strategy_evaluation(self, job: Job) -> None:
         raw_candles = job.payload.get("candles")
         if not isinstance(raw_candles, list):
@@ -226,15 +295,39 @@ class Worker:
                 raise ValueError("invalid candle timestamp")
             values["timestamp"] = datetime.fromisoformat(raw_timestamp)
             candles.append(Candle(**values))
+        benchmark = self.settings.market_benchmark
+        benchmark_closes = (
+            self.repository.latest_candle_closes(
+                str(benchmark["symbol"]),
+                f"{self.settings.market_horizon_minutes}m",
+                limit=self.settings.market_candle_count,
+            )
+            if benchmark
+            else []
+        )
+        market_context = self.repository.latest_market_regime()
+        if market_context:
+            regime_as_of = market_context["as_of"]
+            age = (datetime.now(UTC) - regime_as_of).total_seconds()
+            market_context["data_quality_ok"] = bool(
+                market_context["data_quality_ok"]
+                and 0 <= age <= self.settings.max_market_regime_age_seconds
+            )
+            market_context["as_of"] = regime_as_of.isoformat()
+        symbol = self._required_str(job.payload, "symbol")
         features, analysis, signal_id = await self.container.analysis_service.analyze(
-            symbol=self._required_str(job.payload, "symbol"),
+            symbol=symbol,
             candles=candles,
-            benchmark_closes=None,
-            news=None,
+            benchmark_closes=benchmark_closes if len(benchmark_closes) >= 21 else None,
+            news=self.repository.recent_news_context(
+                symbol,
+                max_age_hours=self.settings.news_max_age_hours,
+            ),
             sector=self._required_str(job.payload, "sector"),
             uic=self._required_int(job.payload, "uic"),
             asset_type=self._required_str(job.payload, "asset_type"),
-            days_to_earnings=None,
+            days_to_earnings=self.repository.days_to_next_earnings(symbol),
+            market_context=market_context,
         )
         del features
         if analysis.decision is Decision.BUY and self.settings.auto_execute_signals:
@@ -264,13 +357,29 @@ class Worker:
         )
 
     async def _news_refresh(self, job: Job) -> None:
-        items = job.payload.get("items", [])
-        if not isinstance(items, list):
-            raise ValueError("news items must be a list")
-        for item in items:
-            if not isinstance(item, dict):
-                raise ValueError("invalid news item")
-            self.repository.save_news(**item)
+        del job
+        provider = self.container.market_intelligence
+        if provider is None:
+            logger.info("news_refresh_skipped", reason="provider_not_configured")
+            return
+        symbols = {str(item["symbol"]) for item in self.settings.trading_universe}
+        news, earnings = await asyncio.gather(
+            provider.fetch_news(
+                symbols=symbols,
+                lookback_hours=self.settings.news_lookback_hours,
+                limit=self.settings.news_max_articles,
+            ),
+            provider.fetch_earnings(symbols=symbols),
+        )
+        new_news = sum(bool(self.repository.save_news(**asdict(item))) for item in news)
+        new_earnings = sum(bool(self.repository.save_earnings(**asdict(item))) for item in earnings)
+        logger.info(
+            "market_intelligence_refreshed",
+            news_received=len(news),
+            news_saved=new_news,
+            earnings_received=len(earnings),
+            earnings_saved=new_earnings,
+        )
 
     @staticmethod
     def _required_str(payload: dict[str, Any], key: str) -> str:

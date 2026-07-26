@@ -210,6 +210,7 @@ async def dashboard(request: Request, _principal: ApiPrincipal) -> DashboardResp
     return DashboardResponse(
         ai_usage=container.repository.ai_usage(),
         portfolio=container.repository.dashboard_summary(),
+        market_intelligence=container.repository.market_intelligence_summary(),
         ai_budget_dkk=container.settings.ai_monthly_budget_dkk,
         trading_mode=container.settings.trading_mode,
         trading_kill_switch=container.settings.trading_kill_switch,

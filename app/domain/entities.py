@@ -178,6 +178,7 @@ class TradeProposal:
     spread_pct: float
     days_to_earnings: int | None
     data_quality_ok: bool
+    market_regime: str = "unknown"
     requested_quantity: int | None = None
     uic: int | None = None
     asset_type: str = "Stock"

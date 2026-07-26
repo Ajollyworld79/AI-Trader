@@ -75,6 +75,7 @@ class RoutedMarketAnalyzer:
         symbol: str,
         features: FeatureSet,
         news: list[str] | None = None,
+        market_context: dict[str, object] | None = None,
     ) -> AIAnalysis:
         if not self.enabled:
             return AIAnalysis(
@@ -92,7 +93,7 @@ class RoutedMarketAnalyzer:
                 risk_flags=("ai_budget_reached",),
             )
 
-        safe_payload = self._safe_payload(symbol, features, news)
+        safe_payload = self._safe_payload(symbol, features, news, market_context)
         mini = await self._request("azure", "mini", safe_payload)
         if mini is None:
             mini = await self._request("openai", "mini", safe_payload)
@@ -247,7 +248,10 @@ class RoutedMarketAnalyzer:
 
     @staticmethod
     def _safe_payload(
-        symbol: str, features: FeatureSet, news: list[str] | None
+        symbol: str,
+        features: FeatureSet,
+        news: list[str] | None,
+        market_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         safe_symbol = "".join(
             character for character in symbol.upper() if character.isalnum() or character in ".-"
@@ -257,6 +261,21 @@ class RoutedMarketAnalyzer:
             "symbol": safe_symbol,
             "features": features.to_safe_ai_payload(),
             "news": sanitized_news,
+            "market_context": {
+                key: value
+                for key, value in (market_context or {}).items()
+                if key
+                in {
+                    "benchmark_symbol",
+                    "as_of",
+                    "regime",
+                    "close",
+                    "volatility",
+                    "adx",
+                    "data_quality_ok",
+                }
+                and isinstance(value, str | int | float | bool)
+            },
         }
         payload["payload_sha256"] = hashlib.sha256(
             json.dumps(payload, sort_keys=True).encode()

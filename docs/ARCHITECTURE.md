@@ -1,10 +1,12 @@
 # Architecture
 
 ```text
-Scheduler -> Market worker -> Saxo candles -> PostgreSQL
+Scheduler -> News worker -> Alpha Vantage news + earnings -> PostgreSQL
+        |
+        +-> Market worker -> Saxo benchmark + instrument candles -> PostgreSQL
                               |
                               v
-                    deterministic features
+                deterministic features + market regime
                               |
                               v
 Strategy worker -> Azure GPT-5.4 Mini -> OpenAI Mini fallback
@@ -48,6 +50,10 @@ beskyttelse af åbne LIVE-positioner.
   ordreparametre.
 - Execution accepterer kun friske signaler, som allerede er gemt i databasen.
 - LIVE kræver autoritativ earnings-status; ukendt status afvises.
+- LIVE kræver et friskt, datakvalitetsgodkendt markedsregime. Ukendt eller
+  forældet regime afvises.
+- Headlines og summaries er utroværdige data. URL'er hentes aldrig; kun et hash
+  gemmes, og tekst trimmes før den må komme i en AI-prompt.
 - En entry uden to accepterede protective order-id'er markeres til
   reconciliation og betragtes ikke som en normal succes.
 

@@ -20,6 +20,8 @@ class RiskEngine:
             reasons.append("take_profit_must_be_above_entry")
         if not proposal.data_quality_ok:
             reasons.append("data_quality_failure")
+        if proposal.market_regime in {"bearish_trending", "extreme_volatility"}:
+            reasons.append(f"market_regime_{proposal.market_regime}")
         if proposal.spread_pct > self.settings.max_spread_pct:
             reasons.append("spread_too_wide")
         if (

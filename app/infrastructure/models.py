@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     Float,
     Index,
@@ -178,6 +179,33 @@ class NewsModel(Timestamped, Base):
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     sentiment: Mapped[str | None] = mapped_column(String(16))
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class EarningsEventModel(Timestamped, Base):
+    __tablename__ = "earnings_events"
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    report_date: Mapped[date] = mapped_column(Date(), nullable=False, index=True)
+    fiscal_date_ending: Mapped[date | None] = mapped_column(Date())
+    estimate: Mapped[float | None] = mapped_column(Float)
+    currency: Mapped[str | None] = mapped_column(String(8))
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class MarketRegimeModel(Timestamped, Base):
+    __tablename__ = "market_regimes"
+    benchmark_symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    regime: Mapped[str] = mapped_column(String(32), nullable=False)
+    close: Mapped[float] = mapped_column(Float, nullable=False)
+    volatility: Mapped[float] = mapped_column(Float, nullable=False)
+    adx: Mapped[float] = mapped_column(Float, nullable=False)
+    data_quality_ok: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("benchmark_symbol", "as_of", name="uq_market_regime_series"),
+    )
 
 
 class BacktestModel(Timestamped, Base):

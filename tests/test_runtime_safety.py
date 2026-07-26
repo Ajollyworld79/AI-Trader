@@ -11,11 +11,13 @@ from app.broker.saxo import SaxoTokenManager
 from app.broker.simulated import SimulatedBroker
 from app.config import Settings
 from app.domain.entities import BrokerOrder, OrderSide, OrderType
+from app.domain.risk import RiskEngine
 from app.infrastructure.database import Base, Database
 from app.infrastructure.repositories import Repository
-from app.security import generate_key
+from app.security import generate_key, hash_secret
 from app.services.positions import PositionManager
-from tests.conftest import candle_series
+from app.services.trading import TradingService
+from tests.conftest import LIVE_KEY, candle_series
 
 
 def repository_for(settings: Settings) -> Repository:
@@ -227,4 +229,54 @@ def test_repository_persists_market_and_performance_records(settings: Settings) 
         average_loser=-10,
         expectancy=1.0,
     )
+    repository.database.engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_live_execution_requires_fresh_market_regime(settings: Settings) -> None:
+    configured = settings.model_copy(
+        update={
+            "trading_mode": "live",
+            "trading_kill_switch": False,
+            "live_confirmation_token_hash": SecretStr(hash_secret(LIVE_KEY)),
+            "max_market_regime_age_seconds": 7_200,
+        }
+    )
+    repository = repository_for(configured)
+    signal_id = repository.save_signal(
+        symbol="MSFT",
+        decision="buy",
+        confidence=0.9,
+        reason="test",
+        risk_flags=[],
+        feature_snapshot={
+            "atr_14": 2.0,
+            "_execution": {
+                "sector": "Technology",
+                "uic": 1234,
+                "asset_type": "Stock",
+                "days_to_earnings": 20,
+                "market_regime": "unknown",
+                "market_regime_as_of": None,
+                "market_data_quality_ok": False,
+            },
+        },
+        model_tier="mini",
+    )
+    service = TradingService(
+        configured,
+        RiskEngine(configured),
+        SimulatedBroker(),
+        repository,
+    )
+    with pytest.raises(ValueError, match="fresh authoritative market regime"):
+        await service.execute_signal(
+            signal_id=signal_id,
+            requested_quantity=None,
+            order_type=OrderType.MARKET,
+            idempotency_key="live-regime-test-1234",
+            actor_key="test-actor",
+            correlation_id="test-correlation",
+            live_confirmation=LIVE_KEY,
+        )
     repository.database.engine.dispose()

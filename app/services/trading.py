@@ -84,6 +84,28 @@ class TradingService:
         )
         if self.settings.trading_mode == "live" and days_to_earnings is None:
             raise ValueError("LIVE execution requires authoritative earnings data")
+        market_regime = str(execution.get("market_regime", "unknown"))
+        market_regime_as_of_raw = execution.get("market_regime_as_of")
+        market_regime_as_of: datetime | None = None
+        if isinstance(market_regime_as_of_raw, str):
+            try:
+                market_regime_as_of = datetime.fromisoformat(market_regime_as_of_raw)
+            except ValueError:
+                market_regime_as_of = None
+        if market_regime_as_of is not None and market_regime_as_of.tzinfo is None:
+            market_regime_as_of = market_regime_as_of.replace(tzinfo=UTC)
+        market_context_fresh = (
+            market_regime_as_of is not None
+            and 0
+            <= (datetime.now(UTC) - market_regime_as_of).total_seconds()
+            <= self.settings.max_market_regime_age_seconds
+        )
+        if self.settings.trading_mode == "live" and (
+            market_regime == "unknown"
+            or not market_context_fresh
+            or not bool(execution.get("market_data_quality_ok", False))
+        ):
+            raise ValueError("LIVE execution requires a fresh authoritative market regime")
         atr_raw = feature_snapshot.get("atr_14")
         if not isinstance(atr_raw, int | float) or isinstance(atr_raw, bool) or atr_raw <= 0:
             raise ValueError("signal is missing a valid ATR")
@@ -114,6 +136,7 @@ class TradingService:
             spread_pct=snapshot.spread_pct,
             days_to_earnings=days_to_earnings,
             data_quality_ok=data_quality_ok,
+            market_regime=market_regime,
             requested_quantity=requested_quantity,
             uic=uic,
             asset_type=asset_type,

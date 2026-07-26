@@ -11,6 +11,8 @@ accepttest.
 - Relevante markedsdataabonnementer er aktive.
 - Railway Postgres og Redis har backup/retention og adgangskontrol.
 - Azure/OpenAI-priser i DKK er opdateret og budgetalarmer er sat.
+- Alpha Vantage-nøglen virker, earnings-kalenderen er opdateret, og
+  benchmarkets Saxo-UIC er verificeret.
 
 ## 2. SIM-accepttest
 
@@ -25,8 +27,8 @@ accepttest.
   annulleres.
 - Fremprovokér et uklart ordre-timeout og bekræft, at jobbet går til
   reconciliation/dead-letter uden automatisk ny entry.
-- Bekræft, at et gammelt signal, forsinkede data og ukendt earnings-status
-  afvises.
+- Bekræft, at et gammelt signal, forsinkede data, ukendt earnings-status samt
+  manglende eller forældet markedsregime afvises.
 
 ## 3. Paper/shadow periode
 
@@ -73,6 +75,7 @@ automatisk execution i første LIVE-fase. Brug ingen gearing eller shorting.
 ## Ikke automatiseret endnu
 
 Den tekniske platform kan ikke selv levere eksterne forudsætninger. Saxo
-credentials/app-godkendelse, markedsdataabonnement, et autoritativt
-earnings-feed, Railway-secrets og den lange paper-validering skal udføres i de
-rigtige miljøer. Uden dem skal systemet forblive i SIM med kill switch aktiv.
+credentials/app-godkendelse, markedsdataabonnement, Alpha Vantage-nøgle,
+verificeret benchmark-UIC, Railway-secrets og den lange paper-validering skal
+udføres i de rigtige miljøer. Uden dem skal systemet forblive i SIM med kill
+switch aktiv.

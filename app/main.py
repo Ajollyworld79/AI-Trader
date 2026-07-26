@@ -25,6 +25,7 @@ from app.infrastructure.rate_limit import RateLimiter
 from app.infrastructure.repositories import Repository
 from app.logging import configure_logging
 from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from app.news.alpha_vantage import AlphaVantageClient
 from app.services.analysis import AnalysisService
 from app.services.positions import PositionManager
 from app.services.trading import TradingService
@@ -44,6 +45,7 @@ class Container:
     analysis_service: AnalysisService
     trading_service: TradingService
     position_manager: PositionManager
+    market_intelligence: AlphaVantageClient | None
     oauth_states: dict[str, float] = field(default_factory=dict)
 
     def create_oauth_state(self) -> str:
@@ -74,6 +76,11 @@ def build_container(settings: Settings) -> Container:
     analysis_service = AnalysisService(analyzer, repository)
     trading_service = TradingService(settings, risk_engine, broker, repository)
     position_manager = PositionManager(settings, broker, repository)
+    market_intelligence = (
+        AlphaVantageClient(settings.alpha_vantage_api_key.get_secret_value())
+        if settings.alpha_vantage_api_key
+        else None
+    )
     return Container(
         settings=settings,
         database=database,
@@ -85,6 +92,7 @@ def build_container(settings: Settings) -> Container:
         analysis_service=analysis_service,
         trading_service=trading_service,
         position_manager=position_manager,
+        market_intelligence=market_intelligence,
     )
 
 
@@ -110,6 +118,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await container.rate_limiter.close()
             if isinstance(container.broker, SaxoBroker):
                 await container.broker.close()
+            if container.market_intelligence:
+                await container.market_intelligence.close()
             container.database.engine.dispose()
 
     app = FastAPI(
