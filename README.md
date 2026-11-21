@@ -1,79 +1,82 @@
 # AI-Trader
 
-Security-first tradingplatform i Python. Systemet kombinerer deterministisk
-markedsanalyse og risikostyring med valgfri AI-klassifikation. AI kan aldrig
-beregne position size, stop loss, take profit, eksponering eller godkende en
-ordre.
+Security-first trading platform in Python. The system combines deterministic
+market analysis and risk management with optional AI classification. The AI can
+never calculate position size, stop loss, take profit or exposure, and it can
+never approve an order.
 
-> Projektet er software til analyse og automatisering, ikke finansiel
-> rådgivning. LIVE-handel er slået fra som standard. Start og valider altid i
+> This project is software for analysis and automation, not financial
+> advice. LIVE trading is turned off by default. Always start and validate in
 > paper/Saxo SIM.
 
-## Hvad der er implementeret
+## What is implemented
 
-- FastAPI REST API med PostgreSQL, SQLAlchemy og Alembic.
-- Deterministiske EMA, SMA, RSI, ATR, MACD, ADX, Bollinger Bands,
-  Volume Profile, relativ styrke, volatilitet, support og resistance.
-- Risk engine med 0,5 % risiko pr. handel, højst 10 positioner, 20 %
-  sektoreksponering, 2 % dagligt tab og 10 % drawdown.
-- Long-only, ingen gearing, spread-, earnings- og datakvalitetskontrol.
-- Automatisk Alpha Vantage-feed til nyheder/sentiment og kommende
-  regnskabsdatoer. Data deduplikeres, begrænses og behandles som utroværdigt
+- FastAPI REST API with PostgreSQL, SQLAlchemy and Alembic.
+- Deterministic EMA, SMA, RSI, ATR, MACD, ADX, Bollinger Bands,
+  Volume Profile, relative strength, volatility, support and resistance.
+- Risk engine with 0.5% risk per trade, at most 10 positions, 20%
+  sector exposure, 2% daily loss and 10% drawdown.
+- Long-only, no leverage, and spread, earnings and data-quality checks.
+- Automatic Alpha Vantage feed for news/sentiment and upcoming earnings
+  dates. Data is deduplicated, rate-limited and treated as untrusted
   input.
-- Saxo-baseret benchmarkanalyse, som klassificerer markedet deterministisk som
-  bullish trend, bearish trend, sidelæns eller ekstrem volatilitet. Bearish og
-  ekstremt volatile regimer afviser nye long-handler før AI.
-- Paper broker og Saxo OpenAPI-adapter med pre-check, idempotency og
-  broker-native stop/take-profit som relaterede ordrer.
-- Ordreudførelse accepterer kun et frisk, gemt `buy`-signal. Kurser,
-  kontoværdi, eksponering, stop, target og quantity hentes eller beregnes
-  server-side og kan ikke angives af API-klienten.
-- Positions-reconciliation med high-watermark, aktivering af broker-native
-  trailing stop og sikker rækkefølge: stop ændres før fast take-profit fjernes.
-- Krypteret lagring af Saxo access/refresh tokens, så OAuth-rotation overlever
-  Railway-genstarter uden at lægge tokens i loggen eller databasen i klartekst.
-  En database-lease forhindrer samtidige workers i at rotere samme refresh
-  token på én gang.
-- Eventdrevet backtest med commission, spread, slippage, dividends, splits,
-  walk-forward-vinduer og en konservativ regel uden look-ahead.
-- Databasehistorik for trades, signals, AI-kald, candles, features, orders,
+- Saxo-based benchmark analysis that classifies the market deterministically as
+  bullish trend, bearish trend, sideways or extreme volatility. Bearish and
+  extremely volatile regimes reject new long trades before the AI is consulted.
+- Paper broker and Saxo OpenAPI adapter with pre-check, idempotency and
+  broker-native stop/take-profit as related orders.
+- Order execution accepts only a fresh, stored `buy` signal. Prices,
+  account value, exposure, stop, target and quantity are fetched or calculated
+  server-side and cannot be supplied by the API client.
+- Position reconciliation with high-watermark, activation of broker-native
+  trailing stop and a safe sequence: the stop is changed before the fixed
+  take-profit is removed.
+- Encrypted storage of Saxo access/refresh tokens, so OAuth rotation survives
+  Railway restarts without putting tokens in the log or in plaintext in the
+  database. A database lease prevents concurrent workers from rotating the same
+  refresh token at the same time.
+- Event-driven backtest with commission, spread, slippage, dividends, splits,
+  walk-forward windows and a conservative rule with no look-ahead.
+- Database history for trades, signals, AI calls, candles, features, orders,
   portfolio snapshots, performance, news, earnings, market regimes, backtests
-  og audit logs.
-- Separate workerroller til market, strategy, execution, position, news og
+  and audit logs.
+- Separate worker roles for market, strategy, execution, position, news and
   scheduler.
-- Docker og Railway-konfiguration til build, migration, healthcheck og drift.
-- Lokale kvalitetskontroller med test, lint, typing og dependency-audit før
-  ændringer pushes til Railway-kilden.
+- Docker and Railway configuration for build, migration, healthcheck and
+  operation.
+- Local quality checks with tests, lint, typing and dependency audit before
+  changes are pushed to the Railway source.
 
-## AI-routing
+## AI routing
 
-Routingen er en kodeinvariant:
+Routing is a code invariant:
 
-1. Alle GPT-5.4 Mini-kald sendes først til Azure OpenAI.
-2. Hvis Azure-kaldet fejler, sendes samme validerede Mini-request til OpenAI.
-3. Alle SOL-kald sendes direkte til OpenAI. SOL kan ikke routes til Azure.
-4. SOL anvendes kun ved usikkerhed og højst til den konfigurerede 5 %-andel.
-5. Hvert provider-forsøg logges separat med provider, model, tokens, latency,
-   pris og resultat.
+1. All GPT-5.4 Mini calls are sent to Azure OpenAI first.
+2. If the Azure call fails, the same validated Mini request is sent to OpenAI.
+3. All SOL calls are sent directly to OpenAI. SOL cannot be routed to Azure.
+4. SOL is used only under uncertainty and at most up to the configured 5% share.
+5. Each provider attempt is logged separately with provider, model, tokens,
+   latency, cost and result.
 
-Begge providers skal være konfigureret, før AI aktiveres. Mangler én, kører
-platformen videre uden AI og returnerer en fail-closed `hold`.
+Both providers must be configured before AI is enabled. If one is missing, the
+platform keeps running without AI and returns a fail-closed `hold`.
 
-## Sikkert ordreflow
+## Secure order flow
 
-1. `POST /v1/analysis` gemmer analysen og returnerer et `signal_id`.
-2. `POST /v1/orders` modtager kun `signal_id`, valgfri quantity-grænse og
-   ordretype.
-3. Serveren henter signalet, en frisk broker-quote og brokerens aktuelle
-   portefølje.
-4. Python beregner ATR-stop, profitmål, positionsstørrelse og alle limits.
-5. Saxo pre-check køres, før entry med relateret stop/take-profit placeres.
-6. En accepteret position registreres til løbende reconciliation.
+1. `POST /v1/analysis` stores the analysis and returns a `signal_id`.
+2. `POST /v1/orders` accepts only `signal_id`, an optional quantity limit and
+   the order type.
+3. The server fetches the signal, a fresh broker quote and the broker's current
+   portfolio.
+4. Python calculates the ATR stop, profit target, position size and all limits.
+5. The Saxo pre-check runs before the entry with a related stop/take-profit is
+   placed.
+6. An accepted position is registered for ongoing reconciliation.
 
-Et signal kan kun forbruges én gang. Klientdata bruges dermed aldrig som
-sandhed for pris, balance eller risiko.
+A signal can be consumed only once. Client data is therefore never used as the
+source of truth for price, balance or risk.
 
-## Hurtig lokal start
+## Quick local start
 
 ```bash
 python3 -m venv .venv
@@ -82,8 +85,8 @@ cp .env.example .env
 .venv/bin/python -m app.security generate-key
 ```
 
-Gem den rå nøgle i din password manager og indsæt kun dens `sha256` i
-`API_KEY_HASHES`. Generér en separat admin-nøgle til `ADMIN_KEY_HASHES`.
+Store the raw key in your password manager and put only its `sha256` in
+`API_KEY_HASHES`. Generate a separate admin key for `ADMIN_KEY_HASHES`.
 
 ```bash
 alembic upgrade head
@@ -96,50 +99,50 @@ Healthcheck:
 curl http://127.0.0.1:8000/health
 ```
 
-Autentificerede endpoints bruger:
+Authenticated endpoints use:
 
 ```text
 Authorization: Bearer <client-key>
-X-Admin-Key: <admin-key>                 # kun administrative handlinger
-Idempotency-Key: <unik 16-64 tegns nøgle> # ordreoprettelse
-X-Live-Confirmation: <live-key>          # kun LIVE
+X-Admin-Key: <admin-key>                 # admin actions only
+Idempotency-Key: <unique 16-64 character key> # order creation
+X-Live-Confirmation: <live-key>          # LIVE only
 ```
 
-## Sikker standard
+## Safe defaults
 
 - `TRADING_MODE=sim`
 - `BROKER_BACKEND=paper`
 - `TRADING_KILL_SWITCH=true`
-- Ingen wildcard CORS eller hosts.
-- Ingen API-dokumentation i production.
-- Ingen hemmeligheder gemmes i Git eller logges.
-- Ordre-POSTs retries aldrig automatisk; uklar brokerstatus markeres til
-  reconciliation for at undgå dobbeltordrer.
-- LIVE kræver Saxo, `LIVE_TRADING_ENABLED=true`, deaktiveret kill switch og
-  en særskilt confirmation token. En frisk benchmarkanalyse og autoritativ
-  earnings-status er også obligatorisk.
+- No wildcard CORS or hosts.
+- No API documentation in production.
+- No secrets are stored in Git or logged.
+- Order POSTs are never retried automatically; an unclear broker status is
+  flagged for reconciliation to avoid duplicate orders.
+- LIVE requires Saxo, `LIVE_TRADING_ENABLED=true`, a disabled kill switch and
+  a separate confirmation token. A fresh benchmark analysis and an authoritative
+  earnings status are also mandatory.
 
-## Nyheder og markedsanalyse
+## News and market analysis
 
-News-workeren henter én global `NEWS_SENTIMENT`-feed og én samlet
-`EARNINGS_CALENDAR` pr. refresh fra
-[Alpha Vantage](https://www.alphavantage.co/documentation/). Standardintervallet
-er seks timer, altså otte requests pr. døgn; den dokumenterede gratis kvote er
-25 requests pr. døgn
-([providerens supportside](https://www.alphavantage.co/support/)).
+The news worker fetches one global `NEWS_SENTIMENT` feed and one combined
+`EARNINGS_CALENDAR` per refresh from
+[Alpha Vantage](https://www.alphavantage.co/documentation/). The default
+interval is six hours, i.e. eight requests per day; the documented free quota is
+25 requests per day
+([provider's support page](https://www.alphavantage.co/support/)).
 
-Market-workeren henter benchmark-candles gennem Saxos chart-endpoint og
-beregner regime, volatilitet og trend i Python. Strategy-workeren samler
-benchmarkets slutkurser, seneste friske regime, relevante nyheder og næste
-regnskabsdato før Mini/SOL-vurderingen. Dashboardet viser status under
-`market_intelligence`.
+The market worker fetches benchmark candles through Saxo's chart endpoint and
+calculates regime, volatility and trend in Python. The strategy worker combines
+the benchmark's closing prices, the latest fresh regime, relevant news and the
+next earnings date before the Mini/SOL assessment. The dashboard shows status
+under `market_intelligence`.
 
-Se [SECURITY.md](SECURITY.md) og
-[Railway-guiden](docs/RAILWAY_DEPLOYMENT.md). Gennemfør også
-[LIVE-readiness-runbooken](docs/LIVE_READINESS.md), før du aktiverer eksterne
-integrationer.
+See [SECURITY.md](SECURITY.md) and the
+[Railway guide](docs/RAILWAY_DEPLOYMENT.md). Also complete the
+[LIVE readiness runbook](docs/LIVE_READINESS.md) before you enable external
+integrations.
 
-## Kvalitetsgates
+## Quality gates
 
 ```bash
 .venv/bin/pytest
@@ -150,4 +153,4 @@ integrationer.
 .venv/bin/pip-audit
 ```
 
-Testpakken håndhæver mindst 80 % coverage.
+The test suite enforces at least 80% coverage.
