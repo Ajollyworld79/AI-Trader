@@ -1,4 +1,4 @@
-# AI-Tader
+# AI-Trader
 
 Security-first tradingplatform i Python. Systemet kombinerer deterministisk
 markedsanalyse og risikostyring med valgfri AI-klassifikation. AI kan aldrig
